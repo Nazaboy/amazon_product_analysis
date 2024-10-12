@@ -1,10 +1,12 @@
 import os
-from bs4 import BeautifulSoup
+import random
+import time
 import requests
 import pandas as pd
-import time
+from bs4 import BeautifulSoup
+from requests.exceptions import RequestException
 
-def scrape_product_list(search_url, num_pages=5):
+def scrape_product_list(search_url, num_pages=5, proxies=None):
     # Create the 'data' directory if it doesn't exist
     if not os.path.exists('data'):
         os.makedirs('data')
@@ -21,41 +23,62 @@ def scrape_product_list(search_url, num_pages=5):
         paginated_url = f"{search_url}&page={page}"
         print(f"Scraping page {page}: {paginated_url}")
 
-        # Send a GET request to fetch the search page
-        response = requests.get(paginated_url, headers=headers)
-        print(f"HTTP Request Status Code: {response.status_code}")
+        # Retry logic in case of connection issues
+        for attempt in range(3):  # Retry up to 3 times
+            try:
+                # Send a GET request to fetch the search page
+                response = requests.get(paginated_url, headers=headers, proxies=proxies, timeout=10)
+                print(f"HTTP Request Status Code: {response.status_code}")
 
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, "html.parser")
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.content, "html.parser")
 
-            # Find all product containers on the page
-            product_containers = soup.find_all('div', {'data-component-type': 's-search-result'})
-            print(f"Number of product containers found on page {page}: {len(product_containers)}")
+                    # Debug: Print the first 500 characters of the page to check its structure
+                    print(soup.prettify()[:500])
 
-            # If no products found, likely hit a limit, stop scraping further pages
-            if len(product_containers) == 0:
-                print("No more products found. Exiting pagination.")
-                break
+                    # Find all product containers on the page
+                    product_containers = soup.find_all('div', {'data-component-type': 's-search-result'})
+                    print(f"Number of product containers found on page {page}: {len(product_containers)}")
 
-            # Iterate over each product container and extract the relevant details
-            for product in product_containers:
-                title = product.h2.get_text(strip=True)
+                    # If no products found, stop scraping further pages
+                    if len(product_containers) == 0:
+                        print("No more products found. Exiting pagination.")
+                        return product_data
 
-                # Extract the product URL (partial link, so we need to add the base URL)
-                link = f"https://www.amazon.co.uk{product.h2.a['href']}"
+                    # Iterate over each product container and extract the relevant details
+                    for product in product_containers:
+                        try:
+                            title = product.h2.get_text(strip=True) if product.h2 else 'N/A'
+                            link = f"https://www.amazon.co.uk{product.h2.a['href']}" if product.h2 and product.h2.a else 'N/A'
+                            price = product.find('span', 'a-price-whole').get_text(strip=True) if product.find('span', 'a-price-whole') else 'N/A'
 
-                # Extract the price (check if price is available, otherwise N/A)
-                price = product.find('span', 'a-price-whole').get_text(strip=True) if product.find('span', 'a-price-whole') else 'N/A'
+                            # Debug: Print extracted data for each product
+                            print(f"Product Title: {title}, Price: {price}, Link: {link}")
 
-                # Append the data to the product list
-                product_data.append([title, link, price])
+                            # Append the data to the product list
+                            product_data.append([title, link, price])
+                        except AttributeError as e:
+                            print(f"Failed to extract product details: {e}")
+                            continue
 
-            # Sleep between requests to avoid being blocked
-            time.sleep(2)
+                    # Sleep with a random delay to avoid getting blocked
+                    time.sleep(random.uniform(1.5, 3.5))
+                    break  # Break out of retry loop if successful
 
-        else:
-            print(f"Failed to retrieve data from {paginated_url}. Status code: {response.status_code}")
-            break
+                else:
+                    print(f"Failed to retrieve data from {paginated_url}. Status code: {response.status_code}")
+                    break  # Stop retrying if we get a bad status code
+
+            except (RequestException, Exception) as e:
+                print(f"Error on attempt {attempt + 1}: {e}")
+                if attempt == 2:  # If max retries reached, stop retrying
+                    print("Max retries reached. Skipping this page.")
+                else:
+                    # Wait before retrying
+                    time.sleep(random.uniform(2, 5))
+
+    # Debug: Print the number of products collected
+    print(f"Total number of products collected: {len(product_data)}")
 
     # If product data was collected, save it to a CSV file
     if product_data:
@@ -73,7 +96,8 @@ def scrape_product_list(search_url, num_pages=5):
 # Example usage
 if __name__ == "__main__":
     search_url = 'https://www.amazon.co.uk/s?k=baby+products'
-    products = scrape_product_list(search_url, num_pages=5)  # Change num_pages as needed
+    proxies = None  # Optional, remove or replace with your proxy settings if needed
+    products = scrape_product_list(search_url, num_pages=5, proxies=proxies)
     
     if products is not None and len(products) > 0:
         print("Scraping completed successfully.")
